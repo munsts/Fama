@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fama Dashboard</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="dashboard">
+    <!-- header section -->
+    <header class="header">
+      <img class="logo" src="../icons/logo.png" alt="" aria-hidden="true" />
+      <div class="title-area">
+        <h1>Fama</h1>
+        <p class="tagline">Personal Web Companion</p>
+      </div>
+    </header>
+
+    <!-- comfort rating gauge -->
+    <section class="comfort-card" aria-label="Comfort Indicator">
+      <div class="comfort-status">
+        <span class="comfort-title">Web Comfort Rating</span>
+        <span class="comfort-badge">Optimal</span>
+      </div>
+      <div class="comfort-track">
+        <div class="comfort-fill"></div>
+      </div>
+      <p class="comfort-desc">Fama is actively smoothing out your browsing experience.</p>
+    </section>
+
+    <!-- stats cards -->
+    <section class="stats-container" aria-label="Extension Statistics">
+      <div class="stat-card">
+        <span class="stat-value" id="healed-count" aria-live="polite">0</span>
+        <span class="stat-label">Labels Healed</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value" id="traps-count" aria-live="polite">0</span>
+        <span class="stat-label">Loops Jumps</span>
+      </div>
+    </section>
+
+    <!-- toggles for features -->
+    <section class="controls" aria-label="Feature Preferences">
+      <h2>Preferences</h2>
+      
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <h3>Heal Missing Labels</h3>
+          <p>Automatically names web buttons and fields that are missing text labels.</p>
+        </div>
+        <label class="switch" for="toggle-labeler">
+          <input type="checkbox" id="toggle-labeler" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <h3>Escape Stuck Pop-ups</h3>
+          <p>Press <kbd>Alt</kbd>+<kbd>Esc</kbd> or <kbd>Alt</kbd>+<kbd>Q</kbd> to jump past pages where you get stuck.</p>
+        </div>
+        <label class="switch" for="toggle-trap">
+          <input type="checkbox" id="toggle-trap" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <h3>Auto-Rescue from Loops</h3>
+          <p>Jumps you past repeating layouts automatically if you cycle through them.</p>
+        </div>
+        <label class="switch" for="toggle-auto-escape">
+          <input type="checkbox" id="toggle-auto-escape" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <h3>Voice Announcements</h3>
+          <p>Speaks healed names and alerts aloud (useful if you do not run a system screen reader).</p>
+        </div>
+        <label class="switch" for="toggle-voice">
+          <input type="checkbox" id="toggle-voice" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <h3>High-Visibility Focus Halo</h3>
+          <p>Highlights the active web item with a clear, glowing pink border.</p>
+        </div>
+        <label class="switch" for="toggle-halo">
+          <input type="checkbox" id="toggle-halo" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <h3>Legible Text Enhancer</h3>
+          <p>Standardizes layout fonts and increases spacing for reading comfort.</p>
+        </div>
+        <label class="switch" for="toggle-legible">
+          <input type="checkbox" id="toggle-legible">
+          <span class="slider"></span>
+        </label>
+      </div>
+    </section>
+
+    <!-- list of recently named elements -->
+    <section class="history-section" aria-label="Recent activity log">
+      <h2>Recent activity</h2>
+      <div class="history-list" id="history-list">
+        <p class="empty-state">No elements healed in this session yet.</p>
+      </div>
+    </section>
+
+    <!-- reset button footer -->
+    <footer class="footer">
+      <button class="btn-reset" id="btn-reset" aria-label="Reset statistics and history log">
+        Reset Stats & History
+      </button>
+    </footer>
+  </div>
+
+  <!-- confirmation popup -->
+  <div class="confirm-overlay" id="confirm-modal" style="display: none;">
+    <div class="confirm-card" role="dialog" aria-modal="true" aria-labelledby="confirm-msg">
+      <p class="confirm-message" id="confirm-msg">Are you sure you want to clear your local metrics history?</p>
+      <div class="confirm-actions">
+        <button class="btn-confirm-yes" id="btn-confirm-yes" aria-label="Yes, clear history">Yes, Clear</button>
+        <button class="btn-confirm-no" id="btn-confirm-no" aria-label="No, cancel resetting">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

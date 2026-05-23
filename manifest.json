@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "Fama",
+  "version": "1.0.0",
+  "description": "Heals unlabeled interactive elements and breaks focus loops to keep web pages keyboard-accessible.",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["scripts/content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/logo.png",
+      "32": "icons/logo.png",
+      "48": "icons/logo.png",
+      "128": "icons/logo.png"
+    }
+  },
+  "icons": {
+    "16": "icons/logo.png",
+    "32": "icons/logo.png",
+    "48": "icons/logo.png",
+    "128": "icons/logo.png"
+  },
+  "commands": {
+    "escape-focus-trap": {
+      "suggested_key": {
+        "default": "Alt+Q"
+      },
+      "description": "Forcefully breaks keyboard focus loops"
+    }
+  }
+}
