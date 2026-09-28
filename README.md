@@ -1,20 +1,47 @@
-A lightweight chrome extension that makes web pages easier to navigate if you use a keyboard or screen reader.
+# Fama — Keyboard & Accessibility Companion
 
-What it does
--names empty tags: if a button or link has no text, fama guesses what it does (by reading classes, path links, image names, or svg shape shapes) and writes a label so screen readers can speak it.
--built-in voice: speaks healed names out loud when you tab onto them (great if you do not run a system screen reader).
--escapes focus loops: if a popup ad or menu traps your keyboard focus, fama helps you jump past it (by pressing alt+q/alt+esc or automatically).
--focus ring: draws a glowing pink ring around the active item so you never lose your place.
--reading booster: swaps page text with clean fonts and wider spacing to make pages easier to read.
+> Intelligent client-side accessibility companion for Chrome. Fama auto-labels unlabeled buttons and links using semantic heuristics, breaks keyboard focus traps in modal dialogs, provides dual-contrast focus rings, and enables instant landmark navigation.
 
-How to load it
--open google chrome and navigate to chrome://extensions/.
--switch on Developer mode in the top-right corner.
--click Load unpacked in the top-left corner.
--select the Fama folder.
--pin the extension to your toolbar to open the settings panel.
+---
 
-Or download Fama through chrome extensions store directly!
+## Key Features
 
-Keys
-alt + q or alt + esc: escape a keyboard loop or popup.
+- **Semantic Auto-Labeler**: Identifies unlabeled buttons, interactive icons, and links without layout reflow. Automatically infers intent from SVG path signatures, icon class conventions (Lucide, Heroicons, FontAwesome, Tabler, Material Icons), context (search forms, steppers, dialog close buttons), and URL routes, injecting standard `aria-label` attributes.
+- **Focus Trap Breaker & Loop Rescue**: Detects cyclical keyboard navigation traps in broken modals, overlays, or mega-menus. Press <kbd>Alt</kbd>+<kbd>Q</kbd> (or <kbd>Alt</kbd>+<kbd>Esc</kbd>) to instantly neutralize the trap and jump to the next interactive page element or `<main>` landmark.
+- **Landmark Navigation**: Jump between major page landmarks (`<main>`, `<nav>`, `<header>`, `<footer>`, `<search>`) using <kbd>Alt</kbd>+<kbd>N</kbd> (forward) and <kbd>Alt</kbd>+<kbd>P</kbd> (backward).
+- **WCAG 2.2 Dual-Contrast Focus Ring**: Injects a dual-contrast indicator (blue and white) that guarantees $\ge 3:1$ contrast against light, dark, and multi-colored backgrounds while respecting `:focus-visible` (keyboard only).
+- **Live Page Inspector**: Open the extension popup on any webpage to see real-time healed elements, re-scan on demand, or click an element to scroll directly to it on the page.
+- **Per-Site Controls**: Quickly toggle Fama on or off for specific domains with one click.
+- **Zero Network Fluff**: Self-contained, lightweight, offline-ready with native system typography. No external tracking, remote fonts, or telemetry.
+
+---
+
+## Keyboard Shortcuts
+
+| Shortcut | Action | Description |
+| :--- | :--- | :--- |
+| <kbd>Alt</kbd> + <kbd>Q</kbd> | **Escape Trap** | Breaks out of a stuck modal or repeating keyboard loop. |
+| <kbd>Alt</kbd> + <kbd>Esc</kbd> | **Quick Escape** | Alternative fallback sequence to escape focus traps. |
+| <kbd>Alt</kbd> + <kbd>N</kbd> | **Next Landmark** | Advance keyboard focus to the next major page landmark. |
+| <kbd>Alt</kbd> + <kbd>P</kbd> | **Prev Landmark** | Move keyboard focus to the previous major page landmark. |
+
+*Shortcuts can be customized anytime via `chrome://extensions/shortcuts`.*
+
+---
+
+## Installation (Unpacked)
+
+1. Open Google Chrome and navigate to `chrome://extensions/`.
+2. Enable **Developer mode** using the toggle in the top-right corner.
+3. Click **Load unpacked** in the top-left corner.
+4. Select this directory (`Fama`).
+5. Pin **Fama** to your extension toolbar for quick access to the Page Inspector.
+
+---
+
+## Architecture
+
+- **`manifest.json`**: Manifest V3 configuration with streamlined permissions (`storage`, `activeTab`).
+- **`background/service-worker.js`**: Listens for global keyboard commands, updates per-tab badge counters, and manages extension settings defaults.
+- **`scripts/content.js`**: Fast semantic labeling heuristics, `MutationObserver` debouncing via `requestIdleCallback`, loop detection ring buffer, trap escaping logic, and message dispatcher.
+- **`popup/`**: Clean, accessible popup controller featuring the Live Page Inspector, site toggle, keyboard cheat sheet, and preference switches.

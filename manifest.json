@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Fama",
-  "version": "1.0.0",
-  "description": "Heals unlabeled interactive elements and breaks focus loops to keep web pages keyboard-accessible.",
+  "name": "Fama - Keyboard & Accessibility Companion",
+  "version": "1.2.0",
+  "description": "Auto-labels interactive elements with semantic heuristics, navigates landmarks, and breaks keyboard focus loops.",
   "permissions": [
     "storage",
     "activeTab"
@@ -14,7 +14,7 @@
     {
       "matches": ["<all_urls>"],
       "js": ["scripts/content.js"],
-      "run_at": "document_start"
+      "run_at": "document_idle"
     }
   ],
   "action": {
@@ -37,7 +37,13 @@
       "suggested_key": {
         "default": "Alt+Q"
       },
-      "description": "Forcefully breaks keyboard focus loops"
+      "description": "Escape stuck modal or keyboard focus trap"
+    },
+    "jump-next-landmark": {
+      "suggested_key": {
+        "default": "Alt+N"
+      },
+      "description": "Jump to next page landmark (main, nav, search, etc.)"
     }
   }
 }

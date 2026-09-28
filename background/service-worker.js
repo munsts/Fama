@@ -1,24 +1,34 @@
-// set up defaults when first installed
+// Initialize default settings on install or update
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get([
     "autoLabelerEnabled",
     "focusTrapBreakerEnabled",
     "autoEscapeLoops",
+    "voiceAnnouncementsEnabled",
+    "focusHaloEnabled",
+    "legibleTextEnabled",
+    "disabledDomains",
     "healedCount",
-    "trapsBrokenCount",
-    "historyLog"
+    "trapsBrokenCount"
   ], (result) => {
-    // don't overwrite user settings if already set
+    const defaults = {
+      autoLabelerEnabled: true,
+      focusTrapBreakerEnabled: true,
+      autoEscapeLoops: true,
+      voiceAnnouncementsEnabled: false,
+      focusHaloEnabled: true,
+      legibleTextEnabled: false,
+      disabledDomains: [],
+      healedCount: 0,
+      trapsBrokenCount: 0
+    };
+
     const updates = {};
-    if (result.autoLabelerEnabled === undefined) updates.autoLabelerEnabled = true;
-    if (result.focusTrapBreakerEnabled === undefined) updates.focusTrapBreakerEnabled = true;
-    if (result.autoEscapeLoops === undefined) updates.autoEscapeLoops = true;
-    if (result.voiceAnnouncementsEnabled === undefined) updates.voiceAnnouncementsEnabled = true;
-    if (result.focusHaloEnabled === undefined) updates.focusHaloEnabled = true;
-    if (result.legibleTextEnabled === undefined) updates.legibleTextEnabled = false;
-    if (result.healedCount === undefined) updates.healedCount = 0;
-    if (result.trapsBrokenCount === undefined) updates.trapsBrokenCount = 0;
-    if (result.historyLog === undefined) updates.historyLog = [];
+    for (const [key, value] of Object.entries(defaults)) {
+      if (result[key] === undefined) {
+        updates[key] = value;
+      }
+    }
 
     if (Object.keys(updates).length > 0) {
       chrome.storage.local.set(updates);
@@ -26,17 +36,26 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-// listen for the global shortcut (alt+q)
+// Global keyboard commands
 chrome.commands.onCommand.addListener((command) => {
-  if (command === "escape-focus-trap") {
-    // send escape signal to the active page tab
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0] && tabs[0].id) {
-        chrome.tabs.sendMessage(tabs[0].id, { action: "force-escape-focus" })
-          .catch(() => {
-            // ignore failures on system or extension pages
-          });
-      }
-    });
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    const activeTab = tabs[0];
+    if (!activeTab || !activeTab.id) return;
+
+    if (command === "escape-focus-trap") {
+      chrome.tabs.sendMessage(activeTab.id, { action: "force-escape-focus" }).catch(() => {});
+    } else if (command === "jump-next-landmark") {
+      chrome.tabs.sendMessage(activeTab.id, { action: "jump-next-landmark" }).catch(() => {});
+    }
+  });
+});
+
+// Update badge count per tab
+chrome.runtime.onMessage.addListener((request, sender) => {
+  if (request.action === "update-tab-badge" && sender.tab && sender.tab.id) {
+    const count = request.count || 0;
+    const text = count > 0 ? (count > 99 ? "99+" : String(count)) : "";
+    chrome.action.setBadgeText({ tabId: sender.tab.id, text });
+    chrome.action.setBadgeBackgroundColor({ tabId: sender.tab.id, color: "#4f46e5" });
   }
 });

@@ -1,935 +1,1129 @@
-// active user settings, synced with storage
-let settings = {
-  autoLabelerEnabled: true,
-  focusTrapBreakerEnabled: true,
-  autoEscapeLoops: true,
-  voiceAnnouncementsEnabled: true,
-  focusHaloEnabled: true,
-  legibleTextEnabled: false
-};
+/**
+ * Fama - High-Performance Keyboard & Accessibility Companion
+ * Intelligent auto-labeling, focus trap breaking, and landmark navigation.
+ */
 
-// track metrics locally before writing to storage
-let localStats = {
-  healedCount: 0,
-  trapsBrokenCount: 0,
-  healedItems: [] // holds recently healed items for popup dashboard
-};
+(function () {
+  'use strict';
 
-// track focused items to see if we get stuck in loops
-const focusHistory = [];
-const MAX_FOCUS_HISTORY = 12;
+  // Prevent double injection
+  if (window.__FAMA_INITIALIZED__) return;
+  window.__FAMA_INITIALIZED__ = true;
 
-// timer to slow down scans when dom updates rapidly
-let scanDebounceTimeout = null;
+  // Configuration & Settings State
+  let settings = {
+    autoLabelerEnabled: true,
+    focusTrapBreakerEnabled: true,
+    autoEscapeLoops: true,
+    voiceAnnouncementsEnabled: false,
+    focusHaloEnabled: true,
+    legibleTextEnabled: false,
+    disabledDomains: []
+  };
 
-// html tags we scan and add names to
-const INTERACTIVE_SELECTOR = 'button, a[href], input, select, textarea, [role="button"], [role="link"], [role="checkbox"], [role="menuitem"], [role="tab"], [tabindex="0"]';
+  const currentDomain = window.location.hostname.toLowerCase();
+  let isCurrentSiteDisabled = false;
 
-// tag names we can focus when shifting away from traps
-const FOCUSABLE_SELECTOR = 'a[href], area[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), iframe, object, embed, [tabindex]:not([tabindex="-1"]), [contenteditable]';
+  // Active Session Metrics for this Tab
+  const tabSession = {
+    healedItems: new Map(), // id -> { id, label, role, tag, elementRef }
+    trapsEscapedCount: 0,
+    nextId: 1
+  };
 
-// mapping helper words to friendly names
-const KEYWORD_MAP = {
-  checkout: "Checkout",
-  cart: "Shopping Cart",
-  shopping: "Shopping",
-  bag: "Shopping Bag",
-  add: "Add",
-  remove: "Remove",
-  delete: "Delete",
-  trash: "Delete",
-  edit: "Edit",
-  pencil: "Edit",
-  modify: "Edit",
-  search: "Search",
-  find: "Search",
-  magnify: "Search",
-  zoom: "Zoom",
-  menu: "Menu",
-  hamburger: "Menu",
-  close: "Close",
-  dismiss: "Close",
-  exit: "Exit",
-  cancel: "Cancel",
-  submit: "Submit",
-  send: "Send",
-  share: "Share",
-  like: "Like",
-  heart: "Like",
-  favorite: "Favorite",
-  star: "Favorite",
-  save: "Save",
-  download: "Download",
-  upload: "Upload",
-  next: "Next",
-  prev: "Previous",
-  previous: "Previous",
-  play: "Play",
-  pause: "Pause",
-  stop: "Stop",
-  settings: "Settings",
-  gear: "Settings",
-  cog: "Settings",
-  info: "Information",
-  help: "Help",
-  home: "Home",
-  login: "Log In",
-  signin: "Sign In",
-  logout: "Log Out",
-  signout: "Sign Out",
-  user: "Profile",
-  profile: "Profile",
-  avatar: "Profile",
-  bell: "Notifications",
-  notification: "Notifications",
-  alert: "Alert",
-  mail: "Email",
-  envelope: "Email",
-  phone: "Phone",
-  call: "Call",
-  filter: "Filter",
-  sort: "Sort",
-  print: "Print",
-  refresh: "Refresh",
-  reload: "Refresh",
-  copy: "Copy",
-  
-  // common layout page mapping
-  about: "About Us",
-  contact: "Contact",
-  pricing: "Pricing",
-  services: "Services",
-  faq: "FAQ",
-  support: "Support",
-  blog: "Blog",
-  careers: "Careers",
-  features: "Features",
-  terms: "Terms of Service",
-  privacy: "Privacy Policy",
-  register: "Register",
-  signup: "Sign Up",
-  shop: "Shop",
-  store: "Store",
-  gallery: "Gallery",
-  portfolio: "Portfolio"
-};
+  // WeakSet to avoid re-evaluating elements we already checked and deemed valid or already processed
+  const processedElements = new WeakSet();
 
-// load saved settings and start searching for empty tags
-function initialize() {
-  chrome.storage.local.get([
-    "autoLabelerEnabled",
-    "focusTrapBreakerEnabled",
-    "autoEscapeLoops",
-    "voiceAnnouncementsEnabled",
-    "focusHaloEnabled",
-    "legibleTextEnabled"
-  ], (stored) => {
-    if (chrome.runtime.lastError) {
-      // fallback to default if storage fails
-      runHealers();
-      applyAccessibilityStyles();
+  // Focus tracking history for loop detection
+  const focusHistory = [];
+  const MAX_FOCUS_HISTORY = 12;
+
+  // Interactive selectors
+  const INTERACTIVE_SELECTOR = [
+    'button',
+    'a[href]',
+    'input',
+    'select',
+    'textarea',
+    'summary',
+    '[role="button"]',
+    '[role="link"]',
+    '[role="checkbox"]',
+    '[role="switch"]',
+    '[role="menuitem"]',
+    '[role="tab"]',
+    '[role="combobox"]',
+    '[role="searchbox"]',
+    '[tabindex="0"]'
+  ].join(', ');
+
+  const FOCUSABLE_SELECTOR = [
+    'a[href]',
+    'area[href]',
+    'input:not([disabled])',
+    'select:not([disabled])',
+    'textarea:not([disabled])',
+    'button:not([disabled])',
+    'iframe',
+    'summary',
+    '[tabindex]:not([tabindex="-1"])',
+    '[contenteditable="true"]'
+  ].join(', ');
+
+  const LANDMARK_SELECTOR = [
+    'main',
+    '[role="main"]',
+    'nav',
+    '[role="navigation"]',
+    'header',
+    '[role="banner"]',
+    'footer',
+    '[role="contentinfo"]',
+    'aside',
+    '[role="complementary"]',
+    'form[role="search"]',
+    'search',
+    '[role="search"]'
+  ].join(', ');
+
+  // Standard semantic icon dictionary
+  const ICON_KEYWORDS = {
+    search: 'Search',
+    magnify: 'Search',
+    find: 'Search',
+    zoom: 'Zoom',
+    cart: 'Shopping cart',
+    basket: 'Shopping cart',
+    bag: 'Shopping bag',
+    checkout: 'Checkout',
+    menu: 'Open menu',
+    hamburger: 'Open menu',
+    bars: 'Open menu',
+    close: 'Close',
+    cross: 'Close',
+    times: 'Close',
+    dismiss: 'Close',
+    cancel: 'Cancel',
+    exit: 'Exit',
+    edit: 'Edit',
+    pencil: 'Edit',
+    write: 'Edit',
+    trash: 'Delete',
+    delete: 'Delete',
+    remove: 'Remove',
+    bin: 'Delete',
+    add: 'Add',
+    plus: 'Add',
+    create: 'Create',
+    new: 'New',
+    save: 'Save',
+    download: 'Download',
+    upload: 'Upload',
+    share: 'Share',
+    like: 'Like',
+    heart: 'Favorite',
+    favorite: 'Favorite',
+    star: 'Favorite',
+    bookmark: 'Bookmark',
+    copy: 'Copy',
+    clipboard: 'Copy to clipboard',
+    settings: 'Settings',
+    gear: 'Settings',
+    cog: 'Settings',
+    config: 'Settings',
+    preferences: 'Preferences',
+    options: 'Options',
+    user: 'Profile',
+    profile: 'Profile',
+    account: 'Account',
+    avatar: 'Profile',
+    bell: 'Notifications',
+    notification: 'Notifications',
+    alert: 'Notifications',
+    mail: 'Email',
+    email: 'Email',
+    envelope: 'Email',
+    inbox: 'Inbox',
+    message: 'Message',
+    chat: 'Chat',
+    comment: 'Comment',
+    phone: 'Call phone',
+    call: 'Call phone',
+    filter: 'Filter',
+    sort: 'Sort',
+    refresh: 'Refresh',
+    reload: 'Reload',
+    sync: 'Synchronize',
+    arrow: 'Navigate',
+    chevron: 'Navigate',
+    next: 'Next',
+    prev: 'Previous',
+    previous: 'Previous',
+    back: 'Go back',
+    forward: 'Go forward',
+    play: 'Play',
+    pause: 'Pause',
+    stop: 'Stop',
+    volume: 'Volume',
+    mute: 'Mute audio',
+    unmute: 'Unmute audio',
+    sound: 'Audio',
+    audio: 'Audio',
+    video: 'Video',
+    eye: 'Toggle visibility',
+    sun: 'Light theme',
+    moon: 'Dark theme',
+    theme: 'Toggle theme',
+    help: 'Help',
+    info: 'Information',
+    faq: 'FAQ',
+    question: 'Help'
+  };
+
+  const SOCIAL_PLATFORMS = {
+    'github.com': 'GitHub',
+    'gitlab.com': 'GitLab',
+    'twitter.com': 'X (Twitter)',
+    'x.com': 'X (Twitter)',
+    'linkedin.com': 'LinkedIn',
+    'youtube.com': 'YouTube',
+    'facebook.com': 'Facebook',
+    'instagram.com': 'Instagram',
+    'reddit.com': 'Reddit',
+    'discord.gg': 'Discord',
+    'discord.com': 'Discord',
+    'slack.com': 'Slack',
+    'threads.net': 'Threads',
+    'tiktok.com': 'TikTok',
+    'pinterest.com': 'Pinterest',
+    'medium.com': 'Medium',
+    'mastodon.social': 'Mastodon',
+    'bsky.app': 'Bluesky'
+  };
+
+  const ROUTE_LABELS = {
+    '': 'Home',
+    'home': 'Home',
+    'about': 'About us',
+    'about-us': 'About us',
+    'contact': 'Contact us',
+    'contact-us': 'Contact us',
+    'pricing': 'Pricing',
+    'features': 'Features',
+    'services': 'Services',
+    'login': 'Log in',
+    'signin': 'Sign in',
+    'sign-in': 'Sign in',
+    'signup': 'Sign up',
+    'sign-up': 'Sign up',
+    'register': 'Register',
+    'join': 'Join',
+    'logout': 'Log out',
+    'signout': 'Sign out',
+    'checkout': 'Checkout',
+    'cart': 'Shopping cart',
+    'shop': 'Shop',
+    'store': 'Store',
+    'products': 'Products',
+    'blog': 'Blog',
+    'news': 'News',
+    'docs': 'Documentation',
+    'documentation': 'Documentation',
+    'api': 'API Reference',
+    'support': 'Support',
+    'help': 'Help Center',
+    'faq': 'FAQ',
+    'terms': 'Terms of Service',
+    'privacy': 'Privacy Policy',
+    'settings': 'Settings',
+    'dashboard': 'Dashboard',
+    'search': 'Search'
+  };
+
+  // Noise tokens to discard during class/id analysis
+  const NOISE_TOKENS = new Set([
+    'btn', 'button', 'btn-primary', 'btn-secondary', 'cta', 'link', 'item', 'wrapper',
+    'container', 'box', 'element', 'clickable', 'active', 'focus', 'hover', 'disabled',
+    'icon', 'svg', 'ico', 'fa', 'fas', 'far', 'fal', 'fad', 'bi', 'ti', 'lucide',
+    'feather', 'material-icons', 'material-symbols-outlined', 'nav', 'main', 'header',
+    'footer', 'col', 'row', 'flex', 'grid', 'd-flex', 'text', 'small', 'large',
+    'primary', 'secondary', 'success', 'danger', 'warning', 'info', 'light', 'dark',
+    'top', 'bottom', 'left', 'right', 'inner', 'outer', 'js', 'custom', 'styled',
+    'fama', 'fama-healed', 'fama-id', 'fama-focus-halo'
+  ]);
+
+  // Inject or update extension styles (Focus Halo & Legible Text)
+  let styleSheetElement = null;
+  function updateStyles() {
+    if (!styleSheetElement) {
+      styleSheetElement = document.createElement('style');
+      styleSheetElement.id = 'fama-accessibility-styles';
+      (document.head || document.documentElement).appendChild(styleSheetElement);
+    }
+
+    if (isCurrentSiteDisabled) {
+      styleSheetElement.textContent = '';
       return;
     }
-    
-    settings = { ...settings, ...stored };
-    
-    if (settings.autoLabelerEnabled) {
-      runHealers();
-      observeDOM();
+
+    let css = '';
+
+    // WCAG 2.2 Compliant Dual-Contrast Focus Ring
+    if (settings.focusHaloEnabled) {
+      css += `
+        /* Dual-contrast focus ring: visible on any dark or light background */
+        :focus-visible,
+        .fama-focus-ring:focus-visible {
+          outline: 2px solid #2563eb !important;
+          outline-offset: 2px !important;
+          box-shadow: 0 0 0 4px #ffffff, 0 0 0 6px #2563eb, 0 4px 12px rgba(37, 99, 235, 0.3) !important;
+        }
+
+        /* Inspector target highlight pulse */
+        .fama-inspected-element {
+          outline: 3px solid #f59e0b !important;
+          outline-offset: 3px !important;
+          box-shadow: 0 0 0 6px rgba(245, 158, 11, 0.4) !important;
+          transition: outline-offset 0.2s ease, box-shadow 0.2s ease !important;
+          animation: fama-pulse-target 1.8s ease-in-out forwards !important;
+        }
+
+        @keyframes fama-pulse-target {
+          0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7); }
+          50% { box-shadow: 0 0 0 12px rgba(245, 158, 11, 0.3); }
+          100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+        }
+      `;
     }
-    
-    if (settings.focusTrapBreakerEnabled || settings.focusHaloEnabled) {
-      setupFocusTracker();
+
+    // Legible Text Mode
+    if (settings.legibleTextEnabled) {
+      css += `
+        body, p, span, li, a, h1, h2, h3, h4, h5, h6, input, button, textarea, select {
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+          line-height: 1.6 !important;
+          letter-spacing: 0.02em !important;
+        }
+      `;
     }
 
-    applyAccessibilityStyles();
-  });
-
-  // messages from service worker / shortcut triggers
-  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === "force-escape-focus") {
-      escapeFocusTrap();
-      sendResponse({ status: "escaped" });
-    } else if (request.action === "settings-changed") {
-      // update settings if user changes them in popup
-      settings = { ...settings, ...request.settings };
-      
-      if (settings.autoLabelerEnabled) {
-        runHealers();
-        observeDOM();
-      } else {
-        disconnectObserver();
-      }
-
-      if (settings.focusTrapBreakerEnabled || settings.focusHaloEnabled) {
-        setupFocusTracker();
-      }
-
-      applyAccessibilityStyles();
-    }
-  });
-}
-
-let famaStyleElement = null;
-// inject custom styles for visual overrides
-function applyAccessibilityStyles() {
-  if (!famaStyleElement) {
-    famaStyleElement = document.createElement("style");
-    famaStyleElement.id = "fama-accessibility-styles";
-    (document.head || document.documentElement).appendChild(famaStyleElement);
+    styleSheetElement.textContent = css;
   }
 
-  let cssRules = "";
+  /**
+   * Fast accessible name check without layout reflows (no innerText)
+   */
+  function hasAccessibleName(el) {
+    // 1. Direct standard ARIA attributes
+    const ariaLabel = el.getAttribute('aria-label');
+    if (ariaLabel && ariaLabel.trim().length > 0) return true;
 
-  // styles for keyboard focus indicator ring
-  if (settings.focusHaloEnabled) {
-    cssRules += `
-      .fama-focus-halo {
-        outline: 3px solid #ff2a6d !important;
-        outline-offset: 3px !important;
-        box-shadow: 0 0 12px rgba(255, 42, 109, 0.6) !important;
-        transition: outline-offset 0.1s ease, box-shadow 0.1s ease !important;
-      }
-    `;
-  }
-
-  // styles for legible sans-serif mode
-  if (settings.legibleTextEnabled) {
-    cssRules += `
-      body, p, span, a, li, h1, h2, h3, h4, h5, h6, input, button, textarea, select {
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
-        line-height: 1.65 !important;
-        letter-spacing: 0.05em !important;
-        word-spacing: 0.1em !important;
-      }
-    `;
-  }
-
-  famaStyleElement.textContent = cssRules;
-}
-
-// check if an item already has a text label or accessibility name
-function hasAccessibleName(el) {
-  // look for direct text content or existing labels
-  if (el.innerText && el.innerText.trim().length > 0) return true;
-  if (el.getAttribute("aria-label")?.trim()) return true;
-  if (el.getAttribute("aria-labelledby")?.trim()) return true;
-  if (el.getAttribute("title")?.trim()) return true;
-  if (el.getAttribute("alt")?.trim()) return true;
-
-  // look for placeholder values or linked labels on forms
-  const tagName = el.tagName.toLowerCase();
-  if (tagName === "input") {
-    if (el.getAttribute("placeholder")?.trim()) return true;
-    if (el.value?.trim()) return true;
-    
-    // check if parent label tag exists
-    if (el.closest("label")) return true;
-    
-    // check for external label tag pointing to this ID
-    if (el.id) {
-      const externalLabel = document.querySelector(`label[for="${el.id}"]`);
-      if (externalLabel && externalLabel.innerText.trim().length > 0) return true;
+    const ariaLabelledby = el.getAttribute('aria-labelledby');
+    if (ariaLabelledby) {
+      const referenced = document.getElementById(ariaLabelledby.trim());
+      if (referenced && referenced.textContent.trim().length > 0) return true;
     }
-  }
 
-  // check if child svg title tag provides a description
-  if (tagName === "button" || el.getAttribute("role") === "button") {
-    const svgTitle = el.querySelector("svg title");
+    // 2. Title or Alt
+    const title = el.getAttribute('title');
+    if (title && title.trim().length > 0) return true;
+
+    if (el.tagName === 'IMG') {
+      const alt = el.getAttribute('alt');
+      if (alt !== null && alt.trim().length > 0) return true;
+    }
+
+    // 3. Form input specials
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'input') {
+      const type = (el.getAttribute('type') || 'text').toLowerCase();
+      if (type === 'submit' || type === 'button' || type === 'reset') {
+        const val = el.getAttribute('value');
+        if (val && val.trim().length > 0) return true;
+      }
+      const placeholder = el.getAttribute('placeholder');
+      if (placeholder && placeholder.trim().length > 0) return true;
+
+      // Check for wrapping <label>
+      if (el.closest('label')) return true;
+
+      // Check for external <label for="id">
+      if (el.id) {
+        const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+        if (label && label.textContent.trim().length > 0) return true;
+      }
+    }
+
+    // 4. Check textContent directly (fast, no layout reflow)
+    // Strip non-breaking spaces and zero-width chars
+    const rawText = el.textContent || '';
+    const cleanText = rawText.replace(/[\s\u00A0\u200B\uFEFF]+/g, ' ').trim();
+    if (cleanText.length > 0) {
+      // Exclude strings that are just common icon ligatures without accessible roles
+      return true;
+    }
+
+    // 5. Check if child SVG has a non-empty <title> or <desc>
+    const svgTitle = el.querySelector('svg > title, svg > desc');
     if (svgTitle && svgTitle.textContent.trim().length > 0) return true;
+
+    // 6. Check if child image has alt
+    const childImg = el.querySelector('img[alt]');
+    if (childImg && childImg.getAttribute('alt').trim().length > 0) return true;
+
+    return false;
   }
 
-  return false;
-}
-
-// break strings apart into simple lowercase words
-function tokenizeString(str) {
-  if (!str) return [];
-  // split on spaces, lines, and capital letters
-  return str
-    .split(/[-_\s]|\b|(?=[A-Z])/)
-    .map(word => word.toLowerCase().replace(/[^a-z]/g, ""))
-    .filter(word => word.length > 1);
-}
-
-// find a friendly name based on element traits
-function computeFallbackLabel(el) {
-  const classStr = typeof el.className === "string" ? el.className : (el.className?.baseVal || "");
-  const idStr = el.id || "";
-  const nameStr = el.getAttribute("name") || "";
-  const dataIcon = el.getAttribute("data-icon") || "";
-
-  // find name clues inside child svg attributes
-  const nestedSvg = el.querySelector("svg");
-  let svgClues = "";
-  if (nestedSvg) {
-    const svgClass = typeof nestedSvg.className === "string" ? nestedSvg.className : (nestedSvg.className?.baseVal || "");
-    const svgId = nestedSvg.id || "";
-    const svgDataIcon = nestedSvg.getAttribute("data-icon") || "";
-    svgClues = `${svgClass} ${svgId} ${svgDataIcon}`;
-
-    // try to guess the icon name by looking at child svg structure
-    // magnifying glass icon detection
-    const hasCircle = nestedSvg.querySelector("circle");
-    const hasLine = nestedSvg.querySelector("line");
-    if (hasCircle && hasLine && (svgClass.includes("search") || svgClues.trim() === "")) {
-      svgClues += " search";
-    }
-
-    // shopping cart basket icon detection
-    const circles = nestedSvg.querySelectorAll("circle");
-    const hasPolyline = nestedSvg.querySelector("polyline");
-    if (circles.length >= 2 && (hasPolyline || svgClass.includes("cart"))) {
-      svgClues += " cart";
-    }
-
-    // navigation arrows chevron detection
-    const polylines = nestedSvg.querySelectorAll("polyline");
-    if (polylines.length === 1 && !hasCircle) {
-      const points = polylines[0].getAttribute("points") || "";
-      if (points.includes("9 18 15 12 9 6") || points.includes("15 18 9 12 15 6")) {
-        svgClues += points.includes("9 18") ? " next" : " prev";
-      }
-    }
-
-    // close cross icon detection
-    const lines = nestedSvg.querySelectorAll("line");
-    if (lines.length === 2 && !hasCircle) {
-      svgClues += " close";
-    }
+  /**
+   * Split string into clean lowercase semantic tokens
+   */
+  function extractTokens(str) {
+    if (!str || typeof str !== 'string') return [];
+    return str
+      .replace(/([a-z])([A-Z])/g, '$1 $2') // camelCase split
+      .replace(/[-_.:/]/g, ' ')            // delimiter split
+      .toLowerCase()
+      .split(/\s+/)
+      .map(w => w.replace(/[^a-z0-9]/g, ''))
+      .filter(w => w.length > 1 && !NOISE_TOKENS.has(w));
   }
 
-  // find name clues from nested image tags
-  const nestedImg = el.querySelector("img");
-  let imgClues = "";
-  if (nestedImg) {
-    const imgSrc = nestedImg.getAttribute("src") || "";
-    imgClues = imgSrc.split("/").pop() || "";
-  }
+  /**
+   * Analyze SVG path shapes, symbols, and icon conventions
+   */
+  function inspectSvgAndIcons(el) {
+    const clues = [];
 
-  // compile all element traits and nested shapes
-  const classIdClues = `${classStr} ${idStr} ${nameStr} ${dataIcon} ${svgClues} ${imgClues}`;
-  const classIdTokens = tokenizeString(classIdClues);
+    // 1. Check icon font classes on element or child <i> / <span> / <svg>
+    const iconCandidates = el.querySelectorAll('i, span, svg');
+    const allNodes = [el, ...Array.from(iconCandidates)];
 
-  // extract name clues from anchor link URL
-  let hrefTokens = [];
-  if (el.tagName.toLowerCase() === "a") {
-    const href = el.getAttribute("href");
-    if (href && !href.startsWith("#") && !href.startsWith("javascript:") && !href.startsWith("tel:") && !href.startsWith("mailto:")) {
-      try {
-        const url = new URL(href, window.location.origin);
-        
-        // check if external link points to known social domains
-        const currentHost = window.location.hostname;
-        if (url.hostname && url.hostname !== currentHost) {
-          const socialMap = {
-            "facebook.com": "Facebook",
-            "twitter.com": "Twitter",
-            "x.com": "Twitter",
-            "instagram.com": "Instagram",
-            "youtube.com": "YouTube",
-            "linkedin.com": "LinkedIn",
-            "github.com": "GitHub",
-            "pinterest.com": "Pinterest",
-            "reddit.com": "Reddit"
-          };
-          for (const domain in socialMap) {
-            if (url.hostname.includes(domain)) {
-              return socialMap[domain]; // return social brand name directly
-            }
-          }
-        }
-        
-        // look at the url path
-        if (url.pathname === "/" || url.pathname === "" || url.pathname.includes("index.html")) {
-          hrefTokens.push("home");
-        } else {
-          const segments = url.pathname.split("/").filter(s => s.length > 0);
-          if (segments.length === 1) {
-            // single path segment is highly descriptive
-            hrefTokens.push(segments[0]);
-          } else if (segments.length > 1) {
-            // deep path links, only search for matches in dictionary
-            for (const seg of segments) {
-              const cleanSeg = seg.toLowerCase().replace(/[^a-z]/g, "");
-              if (KEYWORD_MAP[cleanSeg]) {
-                hrefTokens.push(cleanSeg);
-              }
-            }
-          }
+    for (const node of allNodes) {
+      const cls = typeof node.className === 'string' ? node.className : (node.className?.baseVal || '');
+      const dataIcon = node.getAttribute('data-icon') || node.getAttribute('data-lucide') || node.getAttribute('data-feather') || '';
+      const testId = node.getAttribute('data-testid') || '';
+
+      if (cls) clues.push(...extractTokens(cls));
+      if (dataIcon) clues.push(...extractTokens(dataIcon));
+      if (testId) clues.push(...extractTokens(testId));
+
+      // Check SVG <use href="#icon-name">
+      if (node.tagName && node.tagName.toLowerCase() === 'svg') {
+        const useEl = node.querySelector('use');
+        if (useEl) {
+          const href = useEl.getAttribute('href') || useEl.getAttribute('xlink:href') || '';
+          if (href) clues.push(...extractTokens(href));
         }
 
-        // look inside URL query parameters
-        if (url.search) {
-          const params = new URLSearchParams(url.search);
-          for (const [key, val] of params.entries()) {
-            const cleanKey = key.toLowerCase().replace(/[^a-z]/g, "");
-            const cleanVal = val.toLowerCase().replace(/[^a-z]/g, "");
-            if (KEYWORD_MAP[cleanKey]) hrefTokens.push(cleanKey);
-            if (KEYWORD_MAP[cleanVal]) hrefTokens.push(cleanVal);
+        // Check path data d-attribute for known standard icon signatures
+        const paths = node.querySelectorAll('path');
+        for (const p of paths) {
+          const d = p.getAttribute('d') || '';
+          // Hamburger menu (3 horizontal bars)
+          if (/M\s*\d+\s+6h|M\s*\d+\s+12h|M\s*\d+\s+18h/i.test(d)) {
+            clues.push('menu');
+          }
+          // Close cross (diagonal cross)
+          if (/M\s*6\s+18|L\s*18\s+6|M\s*18\s+6/i.test(d) || /M\s*19\s+6\.41/i.test(d)) {
+            clues.push('close');
+          }
+          // Plus / Add
+          if (/M\s*12\s+5v14|M\s*19\s+13h-6v6/i.test(d)) {
+            clues.push('add');
           }
         }
-      } catch (e) {
-        // fail silently on bad url formats
       }
     }
+
+    return clues;
   }
 
-  // combine local tokens and filtered link keywords
-  const allTokens = [...classIdTokens, ...hrefTokens];
-  
-  // skip technical code noise words
-  const genericWords = new Set([
-    "btn", "button", "class", "id", "style", "wrapper", "icon", "ico", "svg", "js", 
-    "action", "click", "toggle", "container", "element", "control", "accessibility", 
-    "healed", "png", "jpg", "jpeg", "gif", "webp", "html", "htm", "php", "asp", 
-    "aspx", "jsp", "json", "xml", "http", "https", "www", "url", "link", "href", 
-    "src", "image", "img", "asset", "assets", "index", "main", "page", "test", "demo", "fa"
-  ]);
-  const cleanTokens = allTokens.filter(token => !genericWords.has(token));
-
-  if (cleanTokens.length === 0) {
-    // if no clues found, search sibling nodes for text labels
-    const neighboringText = findNeighboringText(el);
-    if (neighboringText) return neighboringText;
-    
-    // fallback role name mapping
-    const rawRole = el.getAttribute("role") || el.tagName.toLowerCase();
-    const roleMap = {
-      "a": "Link",
-      "button": "Button",
-      "input": "Input field",
-      "select": "Dropdown list",
-      "textarea": "Text area"
-    };
-    const role = roleMap[rawRole] || rawRole;
-    return role.charAt(0).toUpperCase() + role.slice(1);
-  }
-
-  // check for common multi-word combinations
-  const tokenSet = new Set(cleanTokens);
-  if (tokenSet.has("shopping") && tokenSet.has("cart")) return "Shopping Cart";
-  if (tokenSet.has("add") && tokenSet.has("cart")) return "Add to Cart";
-  if (tokenSet.has("remove") && tokenSet.has("cart")) return "Remove from Cart";
-  if (tokenSet.has("sign") && tokenSet.has("in")) return "Sign In";
-  if (tokenSet.has("log") && tokenSet.has("in")) return "Log In";
-  if (tokenSet.has("sign") && tokenSet.has("out")) return "Sign Out";
-  if (tokenSet.has("log") && tokenSet.has("out")) return "Log Out";
-
-  // swap tokens with dictionary words
-  const mappedWords = cleanTokens.map(token => KEYWORD_MAP[token] || token);
-
-  // clean up repeated duplicate words
-  const uniqueWords = [];
-  for (const word of mappedWords) {
-    const formattedWord = word.charAt(0).toUpperCase() + word.slice(1);
-    if (uniqueWords[uniqueWords.length - 1] !== formattedWord) {
-      uniqueWords.push(formattedWord);
+  /**
+   * Infer intent from contextual DOM surroundings
+   */
+  function inspectContext(el) {
+    // 1. Inside search form or adjacent to search input
+    if (el.closest('form[role="search"], [role="search"], search')) {
+      return 'Search';
     }
-  }
+    const siblingInput = el.parentElement ? el.parentElement.querySelector('input[type="search"]') : null;
+    if (siblingInput) {
+      return 'Search';
+    }
 
-  return uniqueWords.slice(0, 4).join(" ");
-}
-
-// find sibling text node or adjacent span tag labels
-function findNeighboringText(el) {
-  // look at preceding nodes first
-  let sibling = el.previousSibling;
-  while (sibling) {
-    if (sibling.nodeType === Node.TEXT_NODE) {
-      const text = sibling.textContent.trim();
-      if (text.length > 1 && text.length < 30) {
-        return text.replace(/:$/, "").trim();
+    // 2. Inside modal / dialog / banner
+    const dialogAncestor = el.closest('dialog, [role="dialog"], [role="alertdialog"], .modal');
+    if (dialogAncestor) {
+      const cls = typeof el.className === 'string' ? el.className.toLowerCase() : '';
+      if (cls.includes('close') || cls.includes('dismiss') || cls.includes('cancel')) {
+        return 'Close dialog';
       }
-    } else if (sibling.nodeType === Node.ELEMENT_NODE) {
-      const text = sibling.innerText?.trim();
-      if (text && text.length > 1 && text.length < 30) {
-        return text.replace(/:$/, "").trim();
-      }
-      break; // do not continue if node is not text or simple container
     }
-    sibling = sibling.previousSibling;
-  }
-  return null;
-}
 
-// main function to add label to empty item
-function healElement(el) {
-  if (el.hasAttribute("data-healed") || hasAccessibleName(el)) {
-    return;
-  }
-
-  const generatedLabel = computeFallbackLabel(el);
-  if (!generatedLabel) return;
-
-  const tag = el.tagName.toLowerCase();
-  const classStr = typeof el.className === "string" ? el.className : (el.className?.baseVal || "");
-  const elementId = el.id || "";
-  
-  // create element description signature
-  const elementSignature = `${tag}|${classStr}|${elementId}|${generatedLabel}`;
-
-  // write label to standard accessibility attribute
-  el.setAttribute("aria-label", generatedLabel);
-  el.setAttribute("data-healed", "true");
-
-  let sessionCounted = [];
-  try {
-    const rawSession = sessionStorage.getItem("fama-session-healed");
-    if (rawSession) {
-      sessionCounted = JSON.parse(rawSession);
+    // 3. Stepper / quantity buttons near number input
+    const numberSibling = el.parentElement ? el.parentElement.querySelector('input[type="number"], [aria-label*="Quantity"]') : null;
+    if (numberSibling) {
+      const text = (el.textContent || '').trim();
+      const cls = typeof el.className === 'string' ? el.className.toLowerCase() : '';
+      if (text === '+' || cls.includes('plus') || cls.includes('increment')) return 'Increase quantity';
+      if (text === '-' || text === '–' || cls.includes('minus') || cls.includes('decrement')) return 'Decrease quantity';
     }
-  } catch (e) {
-    // ignore sessionStorage errors
+
+    // 4. Media container controls
+    if (el.closest('video, audio, .video-player, .audio-player')) {
+      const cls = typeof el.className === 'string' ? el.className.toLowerCase() : '';
+      if (cls.includes('play')) return 'Play';
+      if (cls.includes('pause')) return 'Pause';
+      if (cls.includes('mute')) return 'Mute';
+    }
+
+    return null;
   }
 
-  // update counts if we haven't seen this item in current tab
-  if (!sessionCounted.includes(elementSignature)) {
-    sessionCounted.push(elementSignature);
+  /**
+   * Parse Anchor URL targets
+   */
+  function inspectAnchorLink(el) {
+    if (el.tagName.toLowerCase() !== 'a') return null;
+    const href = el.getAttribute('href');
+    if (!href) return null;
+
+    // Mailto & Tel
+    if (href.startsWith('mailto:')) {
+      const email = href.replace(/^mailto:/, '').split('?')[0].trim();
+      return email ? `Email ${email}` : 'Send email';
+    }
+    if (href.startsWith('tel:')) {
+      const phone = href.replace(/^tel:/, '').trim();
+      return phone ? `Call ${phone}` : 'Call phone';
+    }
+
+    if (href.startsWith('#') || href.startsWith('javascript:')) {
+      return null;
+    }
+
     try {
-      sessionStorage.setItem("fama-session-healed", JSON.stringify(sessionCounted));
+      const url = new URL(href, window.location.origin);
+
+      // Social Platform match
+      for (const [domain, label] of Object.entries(SOCIAL_PLATFORMS)) {
+        if (url.hostname === domain || url.hostname.endsWith('.' + domain)) {
+          return `${label} page`;
+        }
+      }
+
+      // Internal route match
+      if (url.hostname === window.location.hostname) {
+        const segments = url.pathname.toLowerCase().split('/').filter(Boolean);
+        if (segments.length === 0) return 'Home';
+        const primary = segments[0];
+        if (ROUTE_LABELS[primary]) return ROUTE_LABELS[primary];
+        if (segments.length === 1 && primary.length > 2 && primary.length < 25) {
+          const words = extractTokens(primary);
+          if (words.length > 0) {
+            return words.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+          }
+        }
+      }
     } catch (e) {
-      // ignore sessionStorage errors
+      // Ignore malformed URLs
     }
 
-    localStats.healedCount++;
-    localStats.healedItems.push({
-      tag: tag,
-      className: classStr,
-      label: generatedLabel,
-      timestamp: Date.now()
-    });
-
-    // write to storage after a short delay
-    scheduleStatsSync();
+    return null;
   }
 
-  // trigger custom event for debug logs
-  const event = new CustomEvent("fama-healed", {
-    detail: {
-      tag: tag,
-      class: el.className,
-      injectedLabel: generatedLabel
+  /**
+   * Determine the most descriptive fallback label
+   */
+  function determineSemanticLabel(el) {
+    // 1. High-confidence context check
+    const contextLabel = inspectContext(el);
+    if (contextLabel) return contextLabel;
+
+    // 2. High-confidence anchor href check
+    const anchorLabel = inspectAnchorLink(el);
+    if (anchorLabel) return anchorLabel;
+
+    // 3. Collect tokens from classes, IDs, name, testids, icons
+    const idTokens = extractTokens(el.id || '');
+    const nameTokens = extractTokens(el.getAttribute('name') || '');
+    const classStr = typeof el.className === 'string' ? el.className : (el.className?.baseVal || '');
+    const classTokens = extractTokens(classStr);
+    const iconTokens = inspectSvgAndIcons(el);
+
+    const allTokens = [...iconTokens, ...classTokens, ...idTokens, ...nameTokens];
+
+    // Priority dictionary matching
+    for (const token of allTokens) {
+      if (ICON_KEYWORDS[token]) {
+        return ICON_KEYWORDS[token];
+      }
     }
-  });
-  window.dispatchEvent(event);
-}
 
-// update extension storage metrics
-let syncTimeout = null;
-function scheduleStatsSync() {
-  if (syncTimeout) clearTimeout(syncTimeout);
-  
-  syncTimeout = setTimeout(() => {
-    chrome.storage.local.get(["healedCount", "historyLog"], (stored) => {
-      const newCount = (stored.healedCount || 0) + localStats.healedCount;
-      
-      // crop list to keep storage size light
-      let newHistory = stored.historyLog || [];
-      const formattedItems = localStats.healedItems.map(item => ({
-        ...item,
-        url: window.location.hostname
-      }));
-      newHistory = [...formattedItems, ...newHistory].slice(0, 25);
+    // Role-based contextual fallback
+    const rawRole = el.getAttribute('role') || el.tagName.toLowerCase();
+    if (allTokens.length > 0) {
+      const capitalized = allTokens.slice(0, 3).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+      return capitalized;
+    }
 
-      chrome.storage.local.set({
-        healedCount: newCount,
-        historyLog: newHistory
+    const defaultRoleNames = {
+      button: 'Unlabeled button',
+      a: 'Unlabeled link',
+      input: 'Unlabeled input',
+      select: 'Unlabeled dropdown',
+      textarea: 'Unlabeled text field'
+    };
+
+    return defaultRoleNames[rawRole] || 'Interactive element';
+  }
+
+  /**
+   * Heal a single element by adding aria-label and registration metadata
+   */
+  function healElement(el) {
+    if (processedElements.has(el)) return;
+    processedElements.add(el);
+
+    // Skip if already labeled or hidden
+    if (hasAccessibleName(el)) return;
+
+    const label = determineSemanticLabel(el);
+    if (!label) return;
+
+    const elementId = `fama-el-${tabSession.nextId++}`;
+    el.setAttribute('aria-label', label);
+    el.setAttribute('data-fama-healed', 'true');
+    el.setAttribute('data-fama-id', elementId);
+
+    const role = el.getAttribute('role') || el.tagName.toLowerCase();
+
+    tabSession.healedItems.set(elementId, {
+      id: elementId,
+      label: label,
+      role: role,
+      tag: el.tagName.toLowerCase(),
+      elementRef: el
+    });
+
+    // Notify background for badge count update (debounced)
+    scheduleTabBadgeUpdate();
+  }
+
+  // Debounced badge sync
+  let badgeSyncTimer = null;
+  function scheduleTabBadgeUpdate() {
+    if (badgeSyncTimer) return;
+    badgeSyncTimer = setTimeout(() => {
+      badgeSyncTimer = null;
+      try {
+        chrome.runtime.sendMessage({
+          action: 'update-tab-badge',
+          count: tabSession.healedItems.size
+        }).catch(() => {});
+      } catch (e) {}
+
+      // Increment all-time metric in storage
+      chrome.storage.local.get(['healedCount'], (res) => {
+        if (chrome.runtime.lastError) return;
+        const current = res.healedCount || 0;
+        chrome.storage.local.set({ healedCount: current + 1 });
       });
-
-      // reset local stats queue
-      localStats.healedCount = 0;
-      localStats.healedItems = [];
-    });
-  }, 1000);
-}
-
-// search page for empty buttons and fields
-function runHealers() {
-  try {
-    const elements = document.querySelectorAll(INTERACTIVE_SELECTOR);
-    elements.forEach(healElement);
-  } catch (e) {
-    // ignore errors
+    }, 400);
   }
-}
 
-// watch page updates for dynamically added elements
-let observer = null;
-function observeDOM() {
-  if (observer) return;
+  /**
+   * Scan candidate elements using requestIdleCallback to avoid jank
+   */
+  let isScanningScheduled = false;
+  function scheduleScan() {
+    if (isScanningScheduled || isCurrentSiteDisabled || !settings.autoLabelerEnabled) return;
+    isScanningScheduled = true;
 
-  observer = new MutationObserver((mutations) => {
-    if (scanDebounceTimeout) clearTimeout(scanDebounceTimeout);
-    
-    // wait until changes stop before running healer
-    scanDebounceTimeout = setTimeout(() => {
-      let shouldScan = false;
-      
-      for (const mutation of mutations) {
-        if (mutation.addedNodes.length > 0) {
-          // verify if newly added elements are interactive
-          for (const node of mutation.addedNodes) {
+    const runner = window.requestIdleCallback || ((cb) => setTimeout(cb, 50));
+    runner(() => {
+      isScanningScheduled = false;
+      const candidates = document.querySelectorAll(INTERACTIVE_SELECTOR);
+      for (let i = 0; i < candidates.length; i++) {
+        healElement(candidates[i]);
+      }
+    });
+  }
+
+  // MutationObserver for dynamic SPAs
+  let domObserver = null;
+  function setupObserver() {
+    if (domObserver || isCurrentSiteDisabled) return;
+
+    domObserver = new MutationObserver((mutations) => {
+      let hasInteractiveAddition = false;
+      for (const m of mutations) {
+        if (m.addedNodes.length > 0) {
+          for (const node of m.addedNodes) {
             if (node.nodeType === Node.ELEMENT_NODE) {
-              if (node.matches(INTERACTIVE_SELECTOR) || node.querySelector(INTERACTIVE_SELECTOR)) {
-                shouldScan = true;
+              if (node.matches && node.matches(INTERACTIVE_SELECTOR)) {
+                hasInteractiveAddition = true;
+                break;
+              }
+              if (node.querySelector && node.querySelector(INTERACTIVE_SELECTOR)) {
+                hasInteractiveAddition = true;
                 break;
               }
             }
           }
         }
-        if (shouldScan) break;
+        if (hasInteractiveAddition) break;
       }
-      
-      if (shouldScan) {
-        runHealers();
+
+      if (hasInteractiveAddition) {
+        scheduleScan();
       }
-    }, 250);
-  });
+    });
 
-  observer.observe(document.body || document.documentElement, {
-    childList: true,
-    subtree: true
-  });
-}
-
-// stop watching page updates
-function disconnectObserver() {
-  if (observer) {
-    observer.disconnect();
-    observer = null;
+    domObserver.observe(document.body || document.documentElement, {
+      childList: true,
+      subtree: true
+    });
   }
-}
 
-/* ==========================================================================
-   FOCUS TRAP BREAKER ENGINE
-   ========================================================================== */
-
-// speak text out loud using browser engine
-function speakText(text) {
-  if (settings.voiceAnnouncementsEnabled && 'speechSynthesis' in window) {
-    try {
-      // cancel any current audio queue
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 0.95;
-      window.speechSynthesis.speak(utterance);
-    } catch (err) {
-      // ignore speech errors
+  function disconnectObserver() {
+    if (domObserver) {
+      domObserver.disconnect();
+      domObserver = null;
     }
   }
-}
 
-// check keyboard focus shifts
-let isFocusTrackerSetup = false;
-function setupFocusTracker() {
-  if (isFocusTrackerSetup) return;
-  isFocusTrackerSetup = true;
+  /* ==========================================================================
+     FOCUS TRAP BREAKER & KEYBOARD ACCESSIBILITY
+     ========================================================================== */
 
-  // break out of loops when alt+q or alt+esc is pressed
-  window.addEventListener("keydown", (e) => {
-    if (e.altKey && (e.key === "Escape" || e.key?.toLowerCase() === "q")) {
-      e.preventDefault();
-      escapeFocusTrap();
-    }
-  }, true);
+  function setupKeyboardListeners() {
+    // Global shortcut listener: Alt+Q or Alt+Escape to escape trap
+    window.addEventListener('keydown', (e) => {
+      if (isCurrentSiteDisabled) return;
 
-  // track focused items to find loops
-  window.addEventListener("focusin", (e) => {
-    const target = e.target;
-    if (!target || target === document.body) return;
+      if (e.altKey && (e.key === 'Escape' || e.key?.toLowerCase() === 'q')) {
+        e.preventDefault();
+        e.stopPropagation();
+        escapeFocusTrap();
+      } else if (e.altKey && e.key?.toLowerCase() === 'n') {
+        // Alt+N jumps to next landmark
+        e.preventDefault();
+        e.stopPropagation();
+        jumpToNextLandmark(1);
+      } else if (e.altKey && e.key?.toLowerCase() === 'p') {
+        // Alt+P jumps to previous landmark
+        e.preventDefault();
+        e.stopPropagation();
+        jumpToNextLandmark(-1);
+      }
+    }, true);
 
-    // turn on focus ring styling
-    if (settings.focusHaloEnabled && typeof target.classList === "object") {
-      target.classList.add("fama-focus-halo");
-    }
+    // Track focus for cycle detection
+    window.addEventListener('focusin', (e) => {
+      if (isCurrentSiteDisabled) return;
 
-    // speak the healed label aloud
-    if (settings.voiceAnnouncementsEnabled && settings.autoLabelerEnabled && target.hasAttribute("data-healed")) {
-      const label = target.getAttribute("aria-label");
-      if (label) {
-        const tagName = target.tagName.toLowerCase();
-        let role = target.getAttribute("role") || tagName;
-        if (tagName === "input") {
-          role = "edit field";
+      const target = e.target;
+      if (!target || target === document.body || target === document.documentElement) return;
+
+      // Voice announcement if enabled
+      if (settings.voiceAnnouncementsEnabled && target.hasAttribute('data-fama-healed')) {
+        announceText(target.getAttribute('aria-label') || '');
+      }
+
+      if (!settings.focusTrapBreakerEnabled) return;
+
+      focusHistory.push(target);
+      if (focusHistory.length > MAX_FOCUS_HISTORY) {
+        focusHistory.shift();
+      }
+
+      // Check for repeating focus loops
+      if (settings.autoEscapeLoops) {
+        detectFocusLoop();
+      }
+    });
+  }
+
+  /**
+   * Detect repeating focus cycles: e.g. [A, B, C, A, B, C]
+   */
+  function detectFocusLoop() {
+    const len = focusHistory.length;
+    if (len < 6) return;
+
+    for (let loopSize = 1; loopSize <= 4; loopSize++) {
+      const required = loopSize * 3;
+      if (len < required) continue;
+
+      const cycle3 = focusHistory.slice(len - loopSize);
+      const cycle2 = focusHistory.slice(len - 2 * loopSize, len - loopSize);
+      const cycle1 = focusHistory.slice(len - 3 * loopSize, len - 2 * loopSize);
+
+      let isLoop = true;
+      for (let i = 0; i < loopSize; i++) {
+        if (cycle1[i] !== cycle2[i] || cycle2[i] !== cycle3[i]) {
+          isLoop = false;
+          break;
         }
-        speakText(`${label}, ${role}`);
+      }
+
+      if (isLoop) {
+        // Clear history to prevent duplicate triggers
+        focusHistory.length = 0;
+        showAccessibleToast('Keyboard loop detected. Escaping container...', 'polite');
+        escapeFocusTrap(cycle3);
+        break;
+      }
+    }
+  }
+
+  /**
+   * Escape Focus Trap: breaks modal confinement and shifts focus outside
+   */
+  function escapeFocusTrap(loopNodes = null) {
+    const activeEl = document.activeElement;
+    if (!activeEl) return;
+
+    // Identify trap container: modal dialog, overlay, or common ancestor
+    let trapContainer = null;
+
+    if (loopNodes && loopNodes.length > 0) {
+      trapContainer = findLowestCommonAncestor(loopNodes);
+    }
+
+    if (!trapContainer || trapContainer === document.body) {
+      let cur = activeEl;
+      while (cur && cur !== document.body && cur !== document.documentElement) {
+        const role = cur.getAttribute('role');
+        const isModal = cur.getAttribute('aria-modal') === 'true';
+        if (cur.tagName.toLowerCase() === 'dialog' || role === 'dialog' || role === 'alertdialog' || isModal) {
+          trapContainer = cur;
+          break;
+        }
+        cur = cur.parentElement;
       }
     }
 
-    if (!settings.focusTrapBreakerEnabled) return;
-    
-    // record active focus history
-    focusHistory.push(target);
-    if (focusHistory.length > MAX_FOCUS_HISTORY) {
-      focusHistory.shift();
+    // Record broken trap metric
+    tabSession.trapsEscapedCount++;
+    chrome.storage.local.get(['trapsBrokenCount'], (res) => {
+      if (chrome.runtime.lastError) return;
+      chrome.storage.local.set({ trapsBrokenCount: (res.trapsBrokenCount || 0) + 1 });
+    });
+
+    // Strategy 1: Find next interactive element in DOM order outside the trap container
+    if (trapContainer && trapContainer !== document.body) {
+      // Temporarily bypass trapping constraints
+      trapContainer.setAttribute('data-fama-trap-bypassed', 'true');
+
+      // Intercept next keydown to prevent the modal from re-capturing Tab
+      const neutralizeTrapCapture = (e) => {
+        if (e.key === 'Tab') {
+          // Allow natural navigation without trap interception
+          e.stopImmediatePropagation();
+        }
+      };
+      window.addEventListener('keydown', neutralizeTrapCapture, { capture: true, once: true });
+
+      // Find all focusable elements
+      const allFocusables = Array.from(document.querySelectorAll(FOCUSABLE_SELECTOR)).filter(el => {
+        return !el.hasAttribute('disabled') && el.getAttribute('tabindex') !== '-1' && el.offsetParent !== null;
+      });
+
+      const containerFocusables = allFocusables.filter(el => trapContainer.contains(el));
+      if (containerFocusables.length > 0) {
+        const lastInContainer = containerFocusables[containerFocusables.length - 1];
+        const lastIdx = allFocusables.indexOf(lastInContainer);
+        if (lastIdx !== -1 && lastIdx + 1 < allFocusables.length) {
+          const nextTarget = allFocusables[lastIdx + 1];
+          nextTarget.focus();
+          showAccessibleToast('Focus moved past trap container (Alt+Q).', 'polite');
+          return;
+        }
+      }
     }
 
-    // check if user is stuck in looping focus
-    checkFocusLoop();
-  });
-
-  // clear focus ring styling when focus moves out
-  window.addEventListener("focusout", (e) => {
-    const target = e.target;
-    if (target && typeof target.classList === "object") {
-      target.classList.remove("fama-focus-halo");
+    // Strategy 2: Fallback to <main> or top landmark
+    const fallbackTarget = document.querySelector('main, [role="main"], h1') || document.body;
+    if (fallbackTarget) {
+      if (!fallbackTarget.hasAttribute('tabindex')) {
+        fallbackTarget.setAttribute('tabindex', '-1');
+      }
+      fallbackTarget.focus();
+      showAccessibleToast('Focus moved to main content area.', 'polite');
     }
-  });
-}
+  }
 
-// scan focus history for repeating cycles
-function checkFocusLoop() {
-  const len = focusHistory.length;
-  if (len < 6) return;
+  /**
+   * Jump between major semantic page landmarks (<main>, <nav>, <header>, etc.)
+   */
+  function jumpToNextLandmark(direction = 1) {
+    const landmarks = Array.from(document.querySelectorAll(LANDMARK_SELECTOR)).filter(el => {
+      return el.offsetParent !== null && !el.hasAttribute('aria-hidden');
+    });
 
-  // check repeating loop sizes
-  for (let loopSize = 1; loopSize <= 4; loopSize++) {
-    const requiredElements = loopSize * 3;
-    if (len < requiredElements) continue;
+    if (landmarks.length === 0) {
+      showAccessibleToast('No landmarks found on this page.', 'polite');
+      return;
+    }
 
-    // slice history into comparison blocks
-    const cycle3 = focusHistory.slice(len - loopSize);
-    const cycle2 = focusHistory.slice(len - 2 * loopSize, len - loopSize);
-    const cycle1 = focusHistory.slice(len - 3 * loopSize, len - 2 * loopSize);
+    const activeEl = document.activeElement;
+    let currentIndex = -1;
 
-    let isMatch = true;
-    for (let i = 0; i < loopSize; i++) {
-      if (cycle1[i] !== cycle2[i] || cycle2[i] !== cycle3[i]) {
-        isMatch = false;
+    for (let i = 0; i < landmarks.length; i++) {
+      if (landmarks[i] === activeEl || landmarks[i].contains(activeEl)) {
+        currentIndex = i;
         break;
       }
     }
 
-    if (isMatch) {
-      // loop detected, trigger rescue
-      handleDetectedTrap(cycle3);
-      break;
+    let nextIndex = (currentIndex + direction + landmarks.length) % landmarks.length;
+    const target = landmarks[nextIndex];
+
+    if (!target.hasAttribute('tabindex')) {
+      target.setAttribute('tabindex', '-1');
     }
-  }
-}
 
-// loop detected actions
-let lastTrapAlertTime = 0;
-function handleDetectedTrap(loopElements) {
-  const now = Date.now();
-  // throttle alerts to prevent spam
-  if (now - lastTrapAlertTime < 10000) return;
-  lastTrapAlertTime = now;
+    target.focus();
 
-  // trigger event for visual console
-  const event = new CustomEvent("fama-trap-detected", {
-    detail: { loopSize: loopElements.length }
-  });
-  window.dispatchEvent(event);
-
-  if (settings.autoEscapeLoops) {
-    showToast("Keyboard loop detected. Jumps you past it now...", true);
-    speakText("Keyboard loop detected. Jumping you past it now.");
-    setTimeout(() => {
-      escapeFocusTrap(loopElements);
-    }, 800);
-  } else {
-    showToast("Got stuck in a loop? Press Alt+Esc or Alt+Q to jump past.", false);
-    speakText("Keyboard loop detected. Press Alt+Escape or Alt+Q to jump past.");
-  }
-}
-
-// calculate common parent container of loop items
-function findLowestCommonAncestor(elements) {
-  if (elements.length === 0) return null;
-  if (elements.length === 1) return elements[0].parentElement;
-
-  let ancestor = elements[0];
-  while (ancestor) {
-    const isCommon = elements.every(el => ancestor.contains(el));
-    if (isCommon && ancestor !== document.body && ancestor !== document.documentElement) {
-      return ancestor;
-    }
-    ancestor = ancestor.parentElement;
-  }
-  return document.body;
-}
-
-// find the dialog container holding focus
-function identifyTrapContainer(activeEl, loopElements) {
-  if (loopElements && loopElements.length > 0) {
-    return findLowestCommonAncestor(loopElements);
+    const tag = target.tagName.toLowerCase();
+    const role = target.getAttribute('role') || tag;
+    const landmarkName = target.getAttribute('aria-label') || role;
+    showAccessibleToast(`Jumped to landmark: ${landmarkName}`, 'polite');
   }
 
-  // climb page tree to find fixed modals or dialogue boxes
-  let cur = activeEl;
-  while (cur && cur !== document.body) {
-    const style = window.getComputedStyle(cur);
-    const role = cur.getAttribute("role");
-    const isModal = cur.getAttribute("aria-modal") === "true";
-    
-    if (
-      role === "dialog" || 
-      role === "alertdialog" || 
-      isModal || 
-      style.position === "fixed" || 
-      cur.classList.contains("modal") || 
-      cur.classList.contains("popup") ||
-      cur.classList.contains("cookie-banner")
-    ) {
-      return cur;
-    }
-    cur = cur.parentElement;
-  }
-  
-  return activeEl.parentElement || document.body;
-}
+  function findLowestCommonAncestor(elements) {
+    if (!elements || elements.length === 0) return null;
+    if (elements.length === 1) return elements[0].parentElement;
 
-// shift focus past the trap container
-function escapeFocusTrap(providedLoopElements = null) {
-  const activeEl = document.activeElement;
-  if (!activeEl || activeEl === document.body) return;
-
-  const trapContainer = identifyTrapContainer(activeEl, providedLoopElements || focusHistory);
-  if (!trapContainer || trapContainer === document.body) {
-    // move focus to page header if no trap container found
-    fallbackFocus();
-    return;
-  }
-
-  // get all visible keyboard focusable elements
-  const allFocusables = Array.from(document.querySelectorAll(FOCUSABLE_SELECTOR)).filter(el => {
-    const rect = el.getBoundingClientRect();
-    const style = window.getComputedStyle(el);
-    return style.display !== "none" && style.visibility !== "hidden" && (rect.width > 0 || rect.height > 0);
-  });
-
-  // separate elements inside the trap
-  const trappedFocusables = allFocusables.filter(el => trapContainer.contains(el));
-  
-  if (trappedFocusables.length === 0) {
-    fallbackFocus();
-    return;
-  }
-
-  // find index of last trapped element
-  const lastTrappedElement = trappedFocusables[trappedFocusables.length - 1];
-  const lastIdx = allFocusables.indexOf(lastTrappedElement);
-
-  // select first item following the trap
-  let escapeTarget = null;
-  if (lastIdx !== -1 && lastIdx + 1 < allFocusables.length) {
-    escapeTarget = allFocusables[lastIdx + 1];
-  }
-
-  if (escapeTarget) {
-    // clear history loop state
-    focusHistory.length = 0;
-    
-    escapeTarget.focus();
-    showToast("Rescued! Shifted keyboard focus past the pop-up.", true);
-    speakText("Rescued! Shifted keyboard focus past the pop-up.");
-    
-    incrementTrapsBrokenStats();
-  } else {
-    fallbackFocus();
-  }
-}
-
-// return focus to page header landmark
-function fallbackFocus() {
-  focusHistory.length = 0;
-  
-  const mainEl = document.querySelector("main") || document.querySelector("#main") || document.querySelector("h1");
-  if (mainEl) {
-    if (!mainEl.hasAttribute("tabindex")) {
-      mainEl.setAttribute("tabindex", "-1");
-    }
-    mainEl.focus();
-  } else {
-    document.body.focus();
-  }
-
-  showToast("Rescued! Returned keyboard focus to the top of the page.", true);
-  speakText("Rescued! Returned keyboard focus to the top of the page.");
-  incrementTrapsBrokenStats();
-}
-
-// log escape count in storage
-function incrementTrapsBrokenStats() {
-  chrome.storage.local.get(["trapsBrokenCount"], (stored) => {
-    if (chrome.runtime.lastError) return;
-    
-    const count = (stored.trapsBrokenCount || 0) + 1;
-    chrome.storage.local.set({ trapsBrokenCount: count });
-  });
-
-  const event = new CustomEvent("fama-trap-broken", {
-    detail: { url: window.location.hostname, timestamp: Date.now() }
-  });
-  window.dispatchEvent(event);
-}
-
-// draw custom pink alert toast
-function showToast(message, isSuccess = true) {
-  // construct notification container if missing
-  let toastContainer = document.getElementById("fama-toast-container");
-  if (!toastContainer) {
-    toastContainer = document.createElement("div");
-    toastContainer.id = "fama-toast-container";
-    Object.assign(toastContainer.style, {
-      position: "fixed",
-      bottom: "24px",
-      right: "24px",
-      zIndex: "2147483647",
-      display: "flex",
-      flexDirection: "column",
-      gap: "8px",
-      fontFamily: "system-ui, -apple-system, sans-serif"
-    });
-    document.body.appendChild(toastContainer);
-  }
-
-  const toast = document.createElement("div");
-  toast.setAttribute("role", "alert");
-  toast.setAttribute("aria-live", "assertive");
-
-  Object.assign(toast.style, {
-    backgroundColor: isSuccess ? "#ff2a6d" : "#ffffff",
-    color: isSuccess ? "#ffffff" : "#4a0e17",
-    border: isSuccess ? "none" : "2px solid #ffb3c1",
-    padding: "12px 18px",
-    borderRadius: "12px",
-    boxShadow: "0 8px 30px rgba(255, 42, 109, 0.15)",
-    fontSize: "14px",
-    fontWeight: "600",
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-    opacity: "0",
-    transform: "translateY(20px)",
-    transition: "all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)"
-  });
-
-  const iconSvg = isSuccess 
-    ? `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>`
-    : `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="12"></line></svg>`;
-
-  toast.innerHTML = `${iconSvg} <span>${message}</span>`;
-  toastContainer.appendChild(toast);
-
-  setTimeout(() => {
-    toast.style.opacity = "1";
-    toast.style.transform = "translateY(0)";
-  }, 10);
-
-  setTimeout(() => {
-    toast.style.opacity = "0";
-    toast.style.transform = "translateY(-15px)";
-    setTimeout(() => {
-      toast.remove();
-      if (toastContainer.children.length === 0) {
-        toastContainer.remove();
+    let ancestor = elements[0].parentElement;
+    while (ancestor && ancestor !== document.body) {
+      if (elements.every(el => ancestor.contains(el))) {
+        return ancestor;
       }
-    }, 300);
-  }, 4000);
-}
+      ancestor = ancestor.parentElement;
+    }
+    return document.body;
+  }
 
-// initialize extension page engine
-initialize();
+  /**
+   * Non-intrusive, WCAG-compliant status announcer
+   */
+  let toastContainer = null;
+  function showAccessibleToast(message, ariaPriority = 'polite') {
+    if (!toastContainer) {
+      toastContainer = document.createElement('div');
+      toastContainer.id = 'fama-notification-area';
+      Object.assign(toastContainer.style, {
+        position: 'fixed',
+        bottom: '20px',
+        right: '20px',
+        zIndex: '2147483647',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '8px',
+        pointerEvents: 'none'
+      });
+      document.body.appendChild(toastContainer);
+    }
+
+    const toast = document.createElement('div');
+    toast.setAttribute('role', 'status');
+    toast.setAttribute('aria-live', ariaPriority);
+
+    Object.assign(toast.style, {
+      background: '#18181b',
+      color: '#f4f4f5',
+      border: '1px solid #3f3f46',
+      borderRadius: '8px',
+      padding: '10px 14px',
+      fontSize: '13px',
+      fontWeight: '500',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      boxShadow: '0 4px 20px rgba(0, 0, 0, 0.25)',
+      opacity: '0',
+      transform: 'translateY(12px)',
+      transition: 'opacity 0.2s ease, transform 0.2s ease',
+      pointerEvents: 'auto'
+    });
+
+    toast.textContent = message;
+    toastContainer.appendChild(toast);
+
+    requestAnimationFrame(() => {
+      toast.style.opacity = '1';
+      toast.style.transform = 'translateY(0)';
+    });
+
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(-8px)';
+      setTimeout(() => {
+        toast.remove();
+        if (toastContainer && toastContainer.children.length === 0) {
+          toastContainer.remove();
+          toastContainer = null;
+        }
+      }, 200);
+    }, 3200);
+  }
+
+  function announceText(text) {
+    if (!('speechSynthesis' in window) || !text) return;
+    try {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 1.0;
+      window.speechSynthesis.speak(utterance);
+    } catch (e) {}
+  }
+
+  /**
+   * Highlight element on page when clicked from popup inspector
+   */
+  function highlightElementById(elementId) {
+    const item = tabSession.healedItems.get(elementId);
+    let target = item?.elementRef;
+
+    if (!target) {
+      target = document.querySelector(`[data-fama-id="${CSS.escape(elementId)}"]`);
+    }
+
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.classList.add('fama-inspected-element');
+      target.focus({ preventScroll: true });
+
+      setTimeout(() => {
+        target.classList.remove('fama-inspected-element');
+      }, 2000);
+      return true;
+    }
+    return false;
+  }
+
+  /* ==========================================================================
+     EXTENSION COMMUNICATION & LIFECYCLE
+     ========================================================================== */
+
+  function handleMessage(request, sender, sendResponse) {
+    switch (request.action) {
+      case 'get-tab-status': {
+        const items = Array.from(tabSession.healedItems.values()).map(it => ({
+          id: it.id,
+          label: it.label,
+          role: it.role,
+          tag: it.tag
+        }));
+
+        sendResponse({
+          domain: currentDomain,
+          isSiteDisabled: isCurrentSiteDisabled,
+          healedCount: tabSession.healedItems.size,
+          trapsBrokenCount: tabSession.trapsEscapedCount,
+          items: items.slice(-35).reverse() // Show latest first
+        });
+        break;
+      }
+
+      case 'highlight-element': {
+        const success = highlightElementById(request.elementId);
+        sendResponse({ success });
+        break;
+      }
+
+      case 'toggle-site-disabled': {
+        chrome.storage.local.get(['disabledDomains'], (res) => {
+          let domains = res.disabledDomains || [];
+          if (request.disable) {
+            if (!domains.includes(currentDomain)) domains.push(currentDomain);
+          } else {
+            domains = domains.filter(d => d !== currentDomain);
+          }
+          chrome.storage.local.set({ disabledDomains: domains }, () => {
+            isCurrentSiteDisabled = request.disable;
+            updateStyles();
+            if (isCurrentSiteDisabled) {
+              disconnectObserver();
+            } else {
+              scheduleScan();
+              setupObserver();
+            }
+            sendResponse({ isSiteDisabled: isCurrentSiteDisabled });
+          });
+        });
+        return true; // async sendResponse
+      }
+
+      case 'force-escape-focus': {
+        escapeFocusTrap();
+        sendResponse({ success: true });
+        break;
+      }
+
+      case 'jump-next-landmark': {
+        jumpToNextLandmark(1);
+        sendResponse({ success: true });
+        break;
+      }
+
+      case 'run-manual-scan': {
+        processedElements.clear?.();
+        scheduleScan();
+        sendResponse({ success: true });
+        break;
+      }
+
+      case 'settings-changed': {
+        settings = { ...settings, ...request.settings };
+        isCurrentSiteDisabled = (settings.disabledDomains || []).includes(currentDomain);
+        updateStyles();
+
+        if (settings.autoLabelerEnabled && !isCurrentSiteDisabled) {
+          scheduleScan();
+          setupObserver();
+        } else {
+          disconnectObserver();
+        }
+        sendResponse({ success: true });
+        break;
+      }
+    }
+  }
+
+  // Initialization
+  function init() {
+    chrome.storage.local.get([
+      'autoLabelerEnabled',
+      'focusTrapBreakerEnabled',
+      'autoEscapeLoops',
+      'voiceAnnouncementsEnabled',
+      'focusHaloEnabled',
+      'legibleTextEnabled',
+      'disabledDomains'
+    ], (stored) => {
+      if (chrome.runtime.lastError) return;
+
+      settings = { ...settings, ...stored };
+      isCurrentSiteDisabled = (settings.disabledDomains || []).includes(currentDomain);
+
+      updateStyles();
+      setupKeyboardListeners();
+
+      if (!isCurrentSiteDisabled && settings.autoLabelerEnabled) {
+        scheduleScan();
+        setupObserver();
+      }
+    });
+
+    chrome.runtime.onMessage.addListener(handleMessage);
+  }
+
+  // Run on DOM ready or immediate if already loaded
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init, { once: true });
+  } else {
+    init();
+  }
+})();
